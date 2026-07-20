@@ -28,7 +28,7 @@ def load_all_sheets(path):
         # Bersihkan spasi di nama kolom
         df.columns = df.columns.astype(str).str.strip()
 
-        # Alias Tanggal (Cari variasi nama kolom tanggal)
+        # Alias Tanggal
         date_candidates = ["Date", "DATE", "date", "Tanggal", "TANGGAL", "Tgl", "tgl"]
         for cand in date_candidates:
             if cand in df.columns:
@@ -67,6 +67,10 @@ def load_all_sheets(path):
             else:
                 df[col] = 0
 
+        # FIX BSW DESIMAL: Jika nilai max BSW <= 1.0 (misal 0.5), kalikan 100 agar jadi persen (50.0%)
+        if df["BSW"].max() <= 1.0 and df["BSW"].max() > 0:
+            df["BSW"] = df["BSW"] * 100
+
         if "Event" not in df.columns:
             df["Event"] = ""
         df["Event"] = df["Event"].fillna("").astype(str)
@@ -101,18 +105,18 @@ except Exception as e:
     st.stop()
 
 # ======================================================
-# 3. SIDEBAR FILTER: NAMA SUMUR & RANGE TANGGAL
+# 3. SIDEBAR FILTER: NAMA SUMUR, TANGGAL & PARAMETER
 # ======================================================
 st.sidebar.header("🛢️ Filter Dashboard")
 
-# 1. Dropdown Filter Nama Sumur (Worksheet)
+# 1. Dropdown Filter Nama Sumur
 well_list = list(all_wells.keys())
 selected_well = st.sidebar.selectbox("Pilih Nama Sumur:", options=well_list)
 
 # Ambil data sumur yang dipilih
 df_raw = all_wells[selected_well]
 
-# 2. Filter Range Tanggal Sesuai Sumur yang Dipilih
+# 2. Filter Range Tanggal
 min_date = df_raw["Date"].min().date()
 max_date = df_raw["Date"].max().date()
 
@@ -122,6 +126,29 @@ selected_dates = st.sidebar.date_input(
     min_value=min_date,
     max_value=max_date
 )
+
+# 3. Filter Parameter Yang Ditampilkan (Multi-Select)
+st.sidebar.subheader("📈 Tampilkan Parameter")
+available_metrics = ["Oil Rate", "Water Rate", "Liq Rate", "BSW", "Pump Intake Press"]
+selected_metrics = st.sidebar.multiselect(
+    "Pilih parameter grafik:",
+    options=available_metrics,
+    default=["Oil Rate", "Water Rate", "Liq Rate", "BSW", "Pump Intake Press"]
+)
+
+# 4. SKALA MANUAL SUMBU Y (TINGGI/RENDAH GRAFIK)
+st.sidebar.subheader("📐 Skala Sumbu Y")
+use_custom_y1 = st.sidebar.checkbox("Set Manual Sumbu Y Kiri (BPD)", value=False)
+if use_custom_y1:
+    col1, col2 = st.sidebar.columns(2)
+    y1_min = col1.number_input("Y1 Min", value=0)
+    y1_max = col2.number_input("Y1 Max", value=300, step=50)
+
+use_custom_y2 = st.sidebar.checkbox("Set Manual Sumbu Y Kanan (BSW/PIP)", value=False)
+if use_custom_y2:
+    col3, col4 = st.sidebar.columns(2)
+    y2_min = col3.number_input("Y2 Min", value=0)
+    y2_max = col4.number_input("Y2 Max", value=100, step=10)
 
 if st.sidebar.button("🔄 Refresh Data Excel"):
     st.cache_data.clear()
@@ -151,51 +178,88 @@ str_end = end_date.strftime("%d-%b-%Y")
 st.info(f"🛢️ **SUMUR:** `{selected_well}` | 📅 **RANGE TANGGAL:** `{str_start}` s/d `{str_end}` | **Total Data:** {len(df)} baris")
 
 # ======================================================
-# 4. PLOTLY TRACES & GRAPH
+# 4. JUDUL HALAMAN (STREAMLIT MARKDOWN)
+# ======================================================
+st.markdown(
+    f"""
+    <div style="text-align: center; margin-top: 10px; margin-bottom: 5px;">
+        <h2 style="margin:0; padding:0; font-weight:bold; color:#1E1E1E;">Production History - {selected_well}</h2>
+        <p style="margin:5px 0 0 0; font-size:14px; color:#555555;">Range View: <b>{str_start}</b> s/d <b>{str_end}</b></p>
+    </div>
+    """, 
+    unsafe_allow_html=True
+)
+
+# ======================================================
+# 5. PLOTLY TRACES & GRAPH DINAMIS
 # ======================================================
 COLOR_OIL_RATE = "rgba(0,160,0,0.75)"
 COLOR_WATER_RATE = "rgba(30,144,255,0.65)"
 COLOR_LIQ_RATE = "rgba(0,82,170,0.80)"
+COLOR_BSW = "rgba(0,122,255,0.9)"
+COLOR_PIP = "rgba(220,0,0,0.85)"
 
 fig = go.Figure()
 
-# Dummy Trace Legend
+stack_area = ("Oil Rate" in selected_metrics) and ("Water Rate" in selected_metrics)
+
+# 1. Oil Area / Line
+if "Oil Rate" in selected_metrics:
+    fig.add_trace(go.Scatter(
+        x=df["Date"], y=df["Oil Rate"], mode="lines", name="Oil Rate",
+        stackgroup="production" if stack_area else None, 
+        line=dict(color="green", width=1.5),
+        fillcolor=COLOR_OIL_RATE if stack_area else None, hoverinfo="skip"
+    ))
+
+# 2. Water Area / Line
+if "Water Rate" in selected_metrics:
+    fig.add_trace(go.Scatter(
+        x=df["Date"], y=df["Water Rate"], mode="lines", name="Water Rate",
+        stackgroup="production" if stack_area else None, 
+        line=dict(color="royalblue", width=1.5),
+        fillcolor=COLOR_WATER_RATE if stack_area else None, hoverinfo="skip"
+    ))
+
+# 3. Liq Rate Line
+if "Liq Rate" in selected_metrics:
+    fig.add_trace(go.Scatter(
+        x=df["Date"], y=df["Liq Rate"], mode="lines", name="Liq Rate",
+        line=dict(color=COLOR_LIQ_RATE, width=3), hoverinfo="skip"
+    ))
+
+# 4. BSW Line (Di Axis Sumbu Y Kanan)
+if "BSW" in selected_metrics:
+    fig.add_trace(go.Scatter(
+        x=df["Date"], y=df["BSW"], name="BSW (%)",
+        mode="lines", line=dict(color=COLOR_BSW, width=2, dash="dashdot"),
+        yaxis="y2", hoverinfo="skip"
+    ))
+
+# 5. Pump Intake Press (Di Axis Sumbu Y Kanan)
+if "Pump Intake Press" in selected_metrics:
+    fig.add_trace(go.Scatter(
+        x=df["Date"], y=df["Pump Intake Press"], name="Pump Intake Press",
+        mode="lines", line=dict(color=COLOR_PIP, width=2, dash="dot"),
+        yaxis="y2", hoverinfo="skip"
+    ))
+
+# 6. Dummy Trace Legend (View)
 fig.add_trace(go.Scatter(
-    x=[df["Date"].iloc[0]], y=[None],
+    x=[df["Date"].iloc[0]], y=[0],
     mode="markers", name=f"🗓️ View: {str_start} to {str_end}",
-    marker=dict(color="rgba(0,0,0,0)"), showlegend=True
-))
-
-# Oil Area
-fig.add_trace(go.Scatter(
-    x=df["Date"], y=df["Oil Rate"], mode="lines", name="Oil Rate",
-    stackgroup="production", line=dict(color="green", width=1),
-    fillcolor=COLOR_OIL_RATE, hoverinfo="skip"
-))
-
-# Water Area
-fig.add_trace(go.Scatter(
-    x=df["Date"], y=df["Water Rate"], mode="lines", name="Water Rate",
-    stackgroup="production", line=dict(color="royalblue", width=1),
-    fillcolor=COLOR_WATER_RATE, hoverinfo="skip"
-))
-
-# Liq Rate Line
-fig.add_trace(go.Scatter(
-    x=df["Date"], y=df["Liq Rate"], mode="lines", name="Liq Rate",
-    line=dict(color=COLOR_LIQ_RATE, width=3), hoverinfo="skip"
-))
-
-# Pump Intake Press
-fig.add_trace(go.Scatter(
-    x=df["Date"], y=df["Pump Intake Press"], name="Pump Intake Press",
-    mode="lines", line=dict(color="red", width=2, dash="dot"),
-    yaxis="y2", hoverinfo="skip"
+    marker=dict(color="rgba(0,0,0,0)", size=0),
+    hoverinfo="skip", showlegend=True
 ))
 
 # Info Hover
+hover_y = df["Liq Rate"] if "Liq Rate" in selected_metrics else (
+    df["Oil Rate"] if "Oil Rate" in selected_metrics else (
+        df["Pump Intake Press"] if "Pump Intake Press" in selected_metrics else df["BSW"]
+    )
+)
 fig.add_trace(go.Scatter(
-    x=df["Date"], y=df["Liq Rate"], mode="markers", name="Info",
+    x=df["Date"], y=hover_y, mode="markers", name="Info",
     marker=dict(size=12, color="rgba(0,0,0,0)"), customdata=df["Hover"],
     hovertemplate="%{customdata}<extra></extra>", showlegend=False
 ))
@@ -224,19 +288,40 @@ if not event_df.empty:
         )
 
 # ======================================================
-# 5. LAYOUT CONFIGURATION (DENGAN TINGGI KOTAK 700PX)
+# 6. PENYESUAIAN SUMBU Y KANAN (RIGHT AXIS TITLE)
+# ======================================================
+right_axis_title = ""  # Diinisialisasi berupa STRING "" (Menghindari TypeError/ValueError)
+right_axis_color = "black"
+
+if "BSW" in selected_metrics and "Pump Intake Press" in selected_metrics:
+    right_axis_title = "BSW (%) / PIP (psi)"
+    right_axis_color = "darkred"
+elif "BSW" in selected_metrics:
+    right_axis_title = "BSW (%)"
+    right_axis_color = COLOR_BSW
+elif "Pump Intake Press" in selected_metrics:
+    right_axis_title = "Pump Intake Press (psi)"
+    right_axis_color = COLOR_PIP
+
+show_y2 = ("BSW" in selected_metrics) or ("Pump Intake Press" in selected_metrics)
+
+# ======================================================
+# 7. LAYOUT CONFIGURATION
 # ======================================================
 fig.update_layout(
     template="plotly_white",
-    height=800,  # <-- UKURAN KOTAK DIPERBESAR TINGGINYA
-    title=dict(
-        text=f"<b>Production History - {selected_well}</b><br><span style='font-size:15px; color:#555555;'>Range View: <b>{str_start}</b> s/d <b>{str_end}</b></span>",
-        x=0.5, font=dict(size=24)
-    ),
+    height=750,
     hovermode="x",
     hoverlabel=dict(bgcolor="white", font_size=11, font_family="Arial"),
-    legend=dict(orientation="h", x=0, y=1.12, bgcolor="rgba(255,255,255,0.8)"),
-    margin=dict(l=80, r=40, t=130, b=80),
+    legend=dict(
+        orientation="h",
+        x=0,
+        y=1.08,
+        xanchor="left",
+        yanchor="bottom",
+        bgcolor="rgba(255,255,255,0.8)"
+    ),
+    margin=dict(l=80, r=40, t=40, b=80),
     xaxis=dict(
         title="Date", showline=True, linewidth=2, linecolor="black", mirror=True,
         ticks="outside", tickwidth=2, ticklen=6, showgrid=True, gridcolor="rgba(200,200,200,0.3)",
@@ -244,16 +329,20 @@ fig.update_layout(
     ),
     yaxis=dict(
         title="Production (BPD)", showline=True, linewidth=2, linecolor="black", mirror=True,
-        ticks="outside", tickwidth=2, ticklen=6, showgrid=True, gridcolor="rgba(220,220,220,0.6)", zeroline=False
+        ticks="outside", tickwidth=2, ticklen=6, showgrid=True, gridcolor="rgba(220,220,220,0.6)", zeroline=False,
+        range=[y1_min, y1_max] if use_custom_y1 else None
     ),
     yaxis2=dict(
-        title=dict(text="Pump Intake Press (psi)", font=dict(color="red")),
-        overlaying="y", side="right", showgrid=False, zeroline=False, showline=True, linewidth=2, linecolor="red",
-        ticks="outside", tickcolor="red", tickfont=dict(color="red")
+        title=dict(text=right_axis_title, font=dict(color=right_axis_color)),
+        overlaying="y", side="right", showgrid=False, zeroline=False, 
+        showline=show_y2, linewidth=2, linecolor=right_axis_color, 
+        ticks="outside" if show_y2 else "", tickcolor=right_axis_color, 
+        tickfont=dict(color=right_axis_color), showticklabels=show_y2,
+        range=[y2_min, y2_max] if (use_custom_y2 and show_y2) else None
     )
 )
 
-# Render Chart dengan lebar penuh
+# Render Chart
 st.plotly_chart(fig, use_container_width=True)
 
 # Preview Data Sumur Terpilih
