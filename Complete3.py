@@ -8,7 +8,7 @@ import streamlit as st
 st.set_page_config(page_title="Production History Dashboard", layout="wide")
 st.title("📊 Production History Dashboard")
 
-file_path = "Data TBNW.xlsx"
+file_path = "Data TB.xlsx"
 
 # ======================================================
 # 2. LOAD SELURUH WORKSHEET (SUMUR) DARI EXCEL
